@@ -15,7 +15,7 @@ use clap::{Parser, Subcommand};
 use error::{set_error_reporter, MaukaError, MaukaResult, TracingErrorReporter};
 use std::path::PathBuf;
 use std::process;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tracing::info;
 
 /// Command line arguments for the Mauka MCP Server.
@@ -67,8 +67,8 @@ fn main() -> MaukaResult<()> {
     // Initialize logging early to capture any startup errors
     init_logging()?;
 
-    // Set up error reporter
-    set_error_reporter(Arc::new(TracingErrorReporter));
+    // Set up error reporter with thread-safe wrapper
+    set_error_reporter(Arc::new(Mutex::new(TracingErrorReporter::new())));
 
     // Parse command-line arguments
     let args = <Args as clap::Parser>::parse();
@@ -94,10 +94,11 @@ fn main() -> MaukaResult<()> {
             config::init_global_config(config);
 
             // Log server startup information
-            let config = config::get_global_config().get();
+            let global_config = config::get_global_config();
+            let server_config = &global_config.get().server;
             info!(
                 "Server configured with name: {}, transport: {:?}, address: {}",
-                config.server.name, config.server.transport, config.server.address
+                server_config.name, server_config.transport, server_config.address
             );
 
             // TODO: Initialize and start server components

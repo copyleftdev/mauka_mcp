@@ -8,6 +8,10 @@ license = "MIT"
 repository = "https://github.com/example/mauka_mcp"
 readme = "README.md"
 documentation = "https://docs.rs/mauka_mcp"
+# Enable documentation generation for private items during development
+rustdoc-args = ["--document-private-items"]
+# Ensure all code is documented
+default-run = "mauka_mcp"
 
 [dependencies]
 # Command-line argument parsing
@@ -26,7 +30,9 @@ tracing-error = "0.2"
 config = "0.13"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+parking_lot = "0.12"
 toml = "0.8"
+once_cell = "1.18"
 
 # Logging and tracing
 tracing = "0.1"
@@ -44,17 +50,33 @@ criterion = "0.5"
 [features]
 default = []
 benchmarking = []
+test-utils = []
+
+[[bench]]
+name = "mauka_benchmarks"
+harness = false
+required-features = ["benchmarking"]
+
+[lib]
+name = "mauka_mcp_lib"
+path = "src/lib.rs"
 
 [profile.release]
 opt-level = 3
 lto = true
 codegen-units = 1
-panic = "abort"
-strip = "symbols"
+strip = true  # Strip symbols from binary
+overflow-checks = true  # Safety first, even in release mode
+debug = false
 
 [profile.dev]
+opt-level = 0
 debug = true
 
 [profile.bench]
-inherits = "release"
-debug = true
+opt-level = 3
+debug = true  # Include debug symbols for profiling
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

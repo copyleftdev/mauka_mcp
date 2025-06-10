@@ -30,11 +30,11 @@ This document outlines the tasks required to build the Mauka MCP Server accordin
 ## Phase 2: Core Components and Testing Framework
 
 ### Testing Infrastructure
-- [ ] Set up unit testing framework
-- [ ] Configure property-based testing
+- [x] Set up unit testing framework
+- [x] Configure property-based testing
 - [ ] Add benchmarking tools
-- [ ] Create mocking utilities
-- [ ] Implement test fixtures and helpers
+- [x] Create mocking utilities
+- [x] Implement test fixtures and helpers
 
 ### Low-Level Data Structures
 - [ ] Build Kahuna Lock-Free Queue

@@ -6,7 +6,7 @@ use crate::error::{
     get_error_reporting, set_error_reporter, ErrorContext, ErrorReporter, MaukaError,
     TracingErrorReporter,
 };
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Test that error context can be created and displayed properly.
 #[test]
@@ -61,21 +61,38 @@ impl ErrorReporter for MockErrorReporter {
 /// Note: This test should be run in isolation because it modifies global state.
 #[test]
 fn test_global_error_reporter() {
-    let reporter = Arc::new(MockErrorReporter::new());
+    let reporter = Arc::new(Mutex::new(MockErrorReporter::new()));
     set_error_reporter(reporter.clone());
 
     let error = MaukaError::Custom("test error".to_string());
     let context = ErrorContext::new(error, "test_component");
 
-    get_error_reporting().report(context);
-
-    assert_eq!(reporter.reported_count(), 1);
+    // Get the error reporter and make the report
+    {
+        let reporter_guard = get_error_reporting();
+        let mutex_guard = reporter_guard.lock().unwrap_or_else(|poisoned| {
+            tracing::error!("Error reporter lock was poisoned, recovering");
+            poisoned.into_inner()
+        });
+        mutex_guard.report(context);
+    } // Ensure the mutex guard is dropped here before trying to lock the reporter again
+    
+    // Get the count directly from our original reporter reference
+    let count = {
+        let reporter_ref = reporter.lock().unwrap_or_else(|poisoned| {
+            tracing::error!("Reporter lock was poisoned during count check, recovering");
+            poisoned.into_inner()
+        });
+        reporter_ref.reported_count()
+    };
+    
+    assert_eq!(count, 1);
 }
 
 /// Test that the default tracing error reporter can be created.
 #[test]
 fn test_tracing_error_reporter() {
-    let reporter = TracingErrorReporter;
+    let reporter = TracingErrorReporter::new();
     let error = MaukaError::Custom("test error".to_string());
     let context = ErrorContext::new(error, "test_component");
 

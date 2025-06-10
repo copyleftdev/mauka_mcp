@@ -4,8 +4,9 @@
 //! following Rust's idiomatic error handling patterns with explicit error types,
 //! proper error propagation, and helpful context information.
 
-use std::fmt::{Display, Formatter};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use tracing;
+use once_cell::sync::OnceCell;
 use thiserror::Error;
 
 pub mod config;
@@ -101,8 +102,8 @@ impl ErrorContext {
     }
 }
 
-impl Display for ErrorContext {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+impl std::fmt::Display for ErrorContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "Error in {}: {}", self.component, self.error)?;
         if let Some(details) = &self.details {
             write!(f, "\nDetails: {details}")?;
@@ -122,8 +123,19 @@ pub trait ErrorReporter: Send + Sync + std::fmt::Debug {
 }
 
 /// A simple error reporter implementation that logs errors using the tracing framework.
-#[derive(Default, Debug)]
-pub struct TracingErrorReporter;
+#[derive(Debug, Default)]
+pub struct TracingErrorReporter {}
+
+impl TracingErrorReporter {
+    /// Creates a new instance of the TracingErrorReporter.
+    ///
+    /// # Returns
+    ///
+    /// A new TracingErrorReporter instance.
+    pub fn new() -> Self {
+        Self {}
+    }
+}
 
 impl ErrorReporter for TracingErrorReporter {
     fn report(&self, context: ErrorContext) {
@@ -134,6 +146,36 @@ impl ErrorReporter for TracingErrorReporter {
             trace = context.trace.as_deref().unwrap_or("None"),
             "Error reported"
         );
+    }
+}
+
+/// Global error reporter instance.
+static ERROR_REPORTER: OnceCell<Arc<Mutex<dyn ErrorReporter + Send + Sync>>> = OnceCell::new();
+
+/// Gets the global error reporter.
+///
+/// # Returns
+///
+/// The global error reporter.
+///
+/// # Panics
+///
+/// Panics if the global error reporter has not been set.
+pub fn get_error_reporting() -> Arc<Mutex<dyn ErrorReporter + Send + Sync>> {
+    ERROR_REPORTER
+        .get()
+        .expect("Error reporter not initialized")
+        .clone()
+}
+
+/// Sets the global error reporter.
+///
+/// # Arguments
+///
+/// * `reporter` - The error reporter to use
+pub fn set_error_reporter(reporter: Arc<Mutex<dyn ErrorReporter + Send + Sync>>) {
+    if ERROR_REPORTER.set(reporter).is_err() {
+        tracing::warn!("Error reporter was already initialized, ignoring new reporter");
     }
 }
 
@@ -165,24 +207,5 @@ impl ErrorReporting {
             // Fallback to standard error output if no reporter is configured
             eprintln!("Error: {context}");
         }
-    }
-}
-
-/// Error reporting singleton instance.
-static mut ERROR_REPORTING: ErrorReporting = ErrorReporting { reporter: None };
-
-/// Get the global error reporting instance.
-pub fn get_error_reporting() -> &'static ErrorReporting {
-    unsafe { &ERROR_REPORTING }
-}
-
-/// Set the global error reporter.
-///
-/// # Arguments
-///
-/// * `reporter` - The error reporter to use
-pub fn set_error_reporter(reporter: Arc<dyn ErrorReporter>) {
-    unsafe {
-        ERROR_REPORTING.set_reporter(reporter);
     }
 }
