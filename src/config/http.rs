@@ -9,8 +9,7 @@ use crate::error::config::ConfigError;
 use serde::{Deserialize, Serialize};
 
 /// HTTP client configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HttpConfig {
     /// Connection pool configuration
     pub connection_pool: ConnectionPoolConfig,
@@ -24,7 +23,6 @@ pub struct HttpConfig {
     /// General HTTP client settings
     pub client: HttpClientConfig,
 }
-
 
 impl Validate for HttpConfig {
     fn validate(&self) -> ConfigResult<()> {

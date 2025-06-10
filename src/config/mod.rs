@@ -5,8 +5,8 @@
 //! All configuration values are validated for correctness before use.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-// Removed unused import
+use std::sync::{Arc, Mutex};
+use once_cell::sync::OnceCell;
 use crate::error::config::ConfigError;
 use config::{Config, ConfigError as ExternalConfigError, Environment, File};
 use serde::{Deserialize, Serialize};
@@ -17,8 +17,52 @@ pub mod limits;
 pub mod security;
 pub mod server;
 
+// Re-export the ServerConfig for easier access
+// ServerConfig is already available via MaukaConfig
+
 /// Result type for configuration operations.
 pub type ConfigResult<T> = Result<T, ConfigError>;
+
+/// Default configuration location
+const DEFAULT_CONFIG_PATH: &str = "config/default.toml";
+
+/// Default environment variable prefix for configuration overrides
+const ENV_PREFIX: &str = "MAUKA";
+
+/// Initialize the default configuration for the Mauka MCP Server.
+///
+/// This loads the default configuration file and merges it with any environment variables.
+/// It also validates the resulting configuration for correctness.
+///
+/// # Returns
+///
+/// * `Ok(())` if the configuration was successfully initialized
+/// * `Err(ConfigError)` if there was an error initializing the configuration
+pub fn init_default_config() -> ConfigResult<()> {
+    // Create a config loader with the default path
+    let config_path = std::path::PathBuf::from(DEFAULT_CONFIG_PATH);
+    let loader = ConfigLoader::new(Some(config_path), ENV_PREFIX);
+
+    // Load and validate the configuration
+    let config = match loader.load() {
+        Ok(config) => config,
+        Err(ConfigError::FileNotFound(_)) => {
+            // In development mode, not having the config file is acceptable
+            // We'll just log a warning and continue with default values
+            tracing::warn!(
+                "Default configuration file not found at: {}",
+                DEFAULT_CONFIG_PATH
+            );
+            MaukaConfig::default()
+        }
+        Err(e) => return Err(e),
+    };
+
+    // Initialize the global configuration
+    init_global_config(config);
+
+    Ok(())
+}
 
 /// A trait for types that can be validated.
 pub trait Validate {
@@ -32,8 +76,7 @@ pub trait Validate {
 }
 
 /// Main configuration for the Mauka MCP Server.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MaukaConfig {
     /// Server configuration
     pub server: server::ServerConfig,
@@ -53,7 +96,6 @@ pub struct MaukaConfig {
     /// Log configuration
     pub log: LogConfig,
 }
-
 
 impl Validate for MaukaConfig {
     fn validate(&self) -> ConfigResult<()> {
@@ -253,33 +295,40 @@ impl GlobalConfig {
     }
 }
 
-/// Global configuration instance.
-static mut GLOBAL_CONFIG: Option<GlobalConfig> = None;
+/// Global server configuration.
+static GLOBAL_CONFIG: OnceCell<Mutex<GlobalConfig>> = OnceCell::new();
 
-/// Initializes the global configuration.
+/// Initialize the global configuration.
 ///
 /// # Arguments
 ///
-/// * `config` - The configuration to use
-///
-/// # Safety
-///
-/// This function is not thread-safe and should only be called during application initialization.
+/// * `config` - The configuration to set as global
 pub fn init_global_config(config: MaukaConfig) {
-    unsafe {
-        GLOBAL_CONFIG = Some(GlobalConfig::new(config));
+    if GLOBAL_CONFIG.set(Mutex::new(GlobalConfig::new(config))).is_err() {
+        tracing::warn!("Global configuration was already initialized, ignoring new configuration");
     }
 }
 
-/// Returns a reference to the global configuration.
+/// Get the global server configuration.
+///
+/// # Returns
+///
+/// The global server configuration.
 ///
 /// # Panics
 ///
 /// Panics if the global configuration has not been initialized.
-pub fn get_global_config() -> &'static GlobalConfig {
-    unsafe {
-        GLOBAL_CONFIG
-            .as_ref()
-            .expect("Global configuration not initialized")
-    }
+pub fn get_global_config() -> GlobalConfig {
+    let mutex = GLOBAL_CONFIG.get()
+        .expect("Global configuration not initialized");
+    
+    // Get a cloned copy of the configuration
+    let guard = mutex.lock().unwrap_or_else(|poisoned| {
+        tracing::error!("Global config lock was poisoned, recovering");
+        poisoned.into_inner()
+    });
+    
+    // Clone the configuration - since GlobalConfig implements Clone,
+    // this is more idiomatic than using a static reference
+    guard.clone()
 }

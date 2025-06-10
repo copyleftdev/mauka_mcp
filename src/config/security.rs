@@ -10,8 +10,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 /// Security configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SecurityConfig {
     /// TLS configuration
     pub tls: TlsConfig,
@@ -25,7 +24,6 @@ pub struct SecurityConfig {
     /// Content Security Policy configuration
     pub content_security: ContentSecurityConfig,
 }
-
 
 impl Validate for SecurityConfig {
     fn validate(&self) -> ConfigResult<()> {

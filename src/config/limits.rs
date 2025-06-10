@@ -8,8 +8,7 @@ use crate::error::config::ConfigError;
 use serde::{Deserialize, Serialize};
 
 /// Resource limits configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LimitsConfig {
     /// Memory limits
     pub memory: MemoryLimits,
@@ -23,7 +22,6 @@ pub struct LimitsConfig {
     /// Request rate limits
     pub request_rate: RequestRateLimits,
 }
-
 
 impl Validate for LimitsConfig {
     fn validate(&self) -> ConfigResult<()> {
