@@ -1,0 +1,57 @@
+# Generated files
+/target/
+**/*.rs.bk
+*.pdb
+
+# Debug artifacts
+**/*.profraw
+
+# Compiled Rust code and dependencies
+Cargo.lock
+.cargo-ok
+
+# Build artifacts
+*.o
+*.so
+*.dylib
+*.dll
+*.a
+
+# Editor and IDE files
+/.idea/
+/.vscode/
+/.fleet/
+/.atom/
+/.vs/
+*.swp
+*.swo
+*~
+*.sublime*
+
+# OS-specific files
+.DS_Store
+thumb.db
+.Spotlight-V100
+.Trashes
+Desktop.ini
+Thumbs.db
+
+# Test artifacts
+*.log
+coverage/
+.coverage
+
+# Environment files
+.env
+.env.local
+
+# Documentation build artifacts
+/docs/build/
+/book/
+
+# Application runtime files
+*.pid
+*.sock
+
+# Don't exclude Cargo.lock if it's already in version control
+# (uncomment this line if needed)

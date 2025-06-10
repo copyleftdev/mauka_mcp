@@ -1,0 +1,107 @@
+# Mauka MCP Server - Project Rules
+
+[CodeQuality]
+enforce_rust_idioms = true
+clippy_pedantic = true
+format_on_save = true
+max_line_length = 100
+disallow_unsafe = true
+only_idiomatic_rust = true
+docstrings_required = true
+type_safety_required = true
+error_handling_required = true
+naming_convention = true
+force_explicit_lifetimes = true
+
+[Development]
+todo_tracking_required = true
+todo_source_of_truth = "todo.md"
+mark_completed_when_tested = true
+commit_message_format = "type(scope): description"
+branch_per_feature = true
+avoid_direct_master_commits = true
+test_before_merge = true
+update_todo_on_completion = true
+test_verification_required = true
+code_review_required = true
+
+[Testing]
+unit_tests_required = true
+integration_tests_required = true
+benchmark_tests_required = true
+test_coverage_minimum = 90
+property_based_testing = true
+fuzzing_for_parsers = true
+performance_regression_tests = true
+test_all_error_paths = true
+test_all_public_apis = true
+test_driven_development = true
+verify_performance_targets = true
+
+[Architecture]
+strict_component_boundaries = true
+dependency_injection = true
+async_first = true
+zero_copy_when_possible = true
+lock_free_concurrency = true
+cache_aware_algorithms = true
+error_propagation_explicit = true
+defensive_programming = true
+graceful_degradation = true
+circuit_breaking = true
+
+[Performance]
+profile_hot_paths = true
+optimize_allocations = true
+use_jemalloc = true
+connection_pooling = true
+aggressive_caching = true
+minimize_serialization = true
+zero_allocations_in_hot_paths = true
+cache_configuration = true
+cpu_cache_friendly = true
+vectorized_operations = true
+
+[Security]
+validate_all_input = true
+sanitize_url_inputs = true
+check_robots_txt = true
+respect_rate_limits = true
+check_content_security = true
+validate_certificates = true
+prevent_request_smuggling = true
+sanitize_headers = true
+secure_tls_configuration = true
+prevent_information_leakage = true
+
+[Documentation]
+api_docs_required = true
+architecture_docs_required = true
+performance_tuning_docs_required = true
+deployment_docs_required = true
+security_considerations_docs = true
+benchmarks_documented = true
+configuration_options_documented = true
+error_codes_documented = true
+
+[Observability]
+structured_logging = true
+prometheus_metrics = true
+health_check_endpoints = true
+performance_profiling = true
+trace_all_requests = true
+monitor_memory_usage = true
+monitor_cpu_usage = true
+cache_hit_rate_tracking = true
+error_rate_tracking = true
+latency_tracking = true
+
+[ReleaseManagement]
+semantic_versioning = true
+changelog_required = true
+tagged_releases = true
+release_notes_required = true
+artifact_signing = true
+dependency_auditing = true
+backward_compatibility_policy = true
+deprecation_policy = true
