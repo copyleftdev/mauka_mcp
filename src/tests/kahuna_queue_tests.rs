@@ -3,7 +3,7 @@
 //! This module contains unit tests, property-based tests, and
 //! performance tests for the Kahuna Queue.
 
-use crate::data_structures::kahuna_queue::{KahunaQueue, KahunaQueueConfig};
+use mauka_mcp_lib::data_structures::kahuna_queue::{KahunaQueue, KahunaQueueConfig};
 use proptest::prelude::*;
 use std::sync::{Arc, Barrier};
 use std::thread;

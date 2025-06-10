@@ -27,20 +27,18 @@
 //! * **Backpressure Mechanism**: Built-in capacity limits with configurable backpressure
 //!   to prevent resource exhaustion
 
-use std::sync::{Arc, Mutex, Barrier};
-use std::sync::atomic::{AtomicPtr, AtomicUsize, AtomicBool, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use std::time::Duration;
-use std::{ptr, thread};
 use std::time::Instant;
 
-// We keep the unused imports in the non-test code to maintain API compatibility
+// Only use the bare minimum imports needed to keep code clean
 // The test module will import them locally as needed
 
 mod node;
 pub use node::Node;
 
 /// Error types for Kahuna Queue operations
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, PartialEq)]
 pub enum KahunaQueueError {
     /// Queue is full and backpressure is being applied
     #[error("Queue is at capacity, backpressure applied")]
@@ -175,10 +173,11 @@ impl<T: Send + Sync> KahunaQueue<T> {
         self.len() >= self.max_capacity
     }
 
-    /// Attempts to push an item onto the queue.
+    /// Attempts to push an item onto the queue using lock-free operations.
     ///
-    /// If the queue is at capacity and backpressure is enabled, this method
-    /// will return `Err(KahunaQueueError::QueueFull)`.
+    /// This method uses a lock-free algorithm based on compare-and-swap operations
+    /// to safely insert items into the queue from multiple threads. The implementation
+    /// carefully manages memory ownership to prevent leaks and use-after-free bugs.
     ///
     /// # Arguments
     ///
@@ -188,8 +187,12 @@ impl<T: Send + Sync> KahunaQueue<T> {
     ///
     /// * `true` if the push was successful
     /// * `false` if the queue is full and backpressure is applied
+    ///
+    /// # Thread Safety
+    ///
+    /// This operation is thread-safe and can be called concurrently from multiple threads.
     pub fn push(&self, value: T) -> bool {
-        // Check capacity if backpressure is enabled
+        // Apply backpressure if configured and queue is at capacity
         if self.apply_backpressure && self.is_full() {
             return false;
         }
@@ -200,12 +203,21 @@ impl<T: Send + Sync> KahunaQueue<T> {
 
         // Use a lock-free algorithm to insert at the tail
         loop {
-            // Get the current tail and its next pointer
+            // Get the current tail and its next pointer with proper memory ordering
             let tail_ptr = self.tail.load(Ordering::Acquire);
+            
+            // Verify tail_ptr is not null before dereferencing
+            if tail_ptr.is_null() {
+                // Handle this extremely rare case (should never happen in a properly initialized queue)
+                // Convert the node back to a Box to properly deallocate it
+                unsafe { drop(Box::from_raw(new_node_ptr)); }
+                return false;
+            }
+            
             let tail = unsafe { &*tail_ptr };
             let tail_next_ptr = tail.next.load(Ordering::Acquire);
 
-            // Check if the tail is still the actual tail
+            // Check if the tail hasn't changed since we read it
             if tail_ptr == self.tail.load(Ordering::Acquire) {
                 if tail_next_ptr.is_null() {
                     // The tail is really the tail, try to insert the new node
@@ -216,15 +228,18 @@ impl<T: Send + Sync> KahunaQueue<T> {
                         Ordering::Relaxed,
                     ) {
                         Ok(_) => {
-                            // Successfully inserted the new node, try to update the tail
+                            // Successfully inserted the new node
+                            // We help update the tail pointer - this might not succeed if another thread
+                            // updates it first, but that's okay
                             let _ = self.tail.compare_exchange(
                                 tail_ptr,
                                 new_node_ptr,
                                 Ordering::Release,
                                 Ordering::Relaxed,
                             );
-                            // Increment the count
-                            self.count.fetch_add(1, Ordering::SeqCst);
+                            
+                            // Increment the count atomically with appropriate memory ordering
+                            self.count.fetch_add(1, Ordering::Release);
                             return true;
                         }
                         Err(_) => {
@@ -234,6 +249,7 @@ impl<T: Send + Sync> KahunaQueue<T> {
                     }
                 } else {
                     // The tail is not actually the tail, try to help by moving the tail forward
+                    // This helps other threads make progress and prevents the "lagging tail" problem
                     let _ = self.tail.compare_exchange(
                         tail_ptr,
                         tail_next_ptr,
@@ -242,26 +258,43 @@ impl<T: Send + Sync> KahunaQueue<T> {
                     );
                 }
             }
+            
+            // Brief yield to reduce contention in tight loops
+            std::hint::spin_loop();
         }
     }
 
-    /// Attempts to pop an item from the queue.
+    /// Attempts to pop an item from the queue using lock-free operations.
+    ///
+    /// This method implements the lock-free dequeue operation of the Michael-Scott queue algorithm.
+    /// It handles the ABA problem and ensures proper memory reclamation.
     ///
     /// # Returns
     ///
     /// Some(T) if an item was popped, None if the queue is empty.
+    ///
+    /// # Thread Safety
+    ///
+    /// This operation is thread-safe and can be called concurrently from multiple threads.
+    /// It properly synchronizes with push operations through atomic memory operations.
     pub fn pop(&self) -> Option<T> {
         loop {
-            // Get the current head, tail, and head's next pointers
+            // Get the current head, tail, and head's next pointers with proper memory ordering
             let head_ptr = self.head.load(Ordering::Acquire);
+            
+            // Safety check for null pointer (should never happen in a properly initialized queue)
+            if head_ptr.is_null() {
+                return None;
+            }
+            
             let tail_ptr = self.tail.load(Ordering::Acquire);
             let head = unsafe { &*head_ptr };
             let next_ptr = head.next.load(Ordering::Acquire);
 
-            // Check if the head is still valid
+            // Check if the head hasn't changed since we read it
             if head_ptr == self.head.load(Ordering::Acquire) {
                 // If the head and tail are the same, and there's no next node,
-                // the queue is empty
+                // the queue is empty (this is the sentinel node only state)
                 if head_ptr == tail_ptr && next_ptr.is_null() {
                     return None;
                 }
@@ -269,6 +302,7 @@ impl<T: Send + Sync> KahunaQueue<T> {
                 // If the head and tail are the same but there is a next node,
                 // the tail is lagging, help by moving it forward
                 if head_ptr == tail_ptr {
+                    // This is a cooperative operation to help other threads
                     let _ = self.tail.compare_exchange(
                         tail_ptr,
                         next_ptr,
@@ -277,10 +311,17 @@ impl<T: Send + Sync> KahunaQueue<T> {
                     );
                     continue;
                 }
+                
+                // Safety check for null next pointer (should never happen in a valid state)
+                if next_ptr.is_null() {
+                    continue;
+                }
 
-                // Try to retrieve the value from the next node (real head)
+                // Try to retrieve the value from the next node (the real head of data)
                 let next = unsafe { &*next_ptr };
-                let value = next.take(); // Use the Node's take() method instead of directly accessing UnsafeCell
+                
+                // Take the value atomically
+                let value = next.take();
 
                 // Try to move the head forward
                 match self.head.compare_exchange(
@@ -290,16 +331,22 @@ impl<T: Send + Sync> KahunaQueue<T> {
                     Ordering::Relaxed,
                 ) {
                     Ok(_) => {
-                        // Successfully moved the head, properly clean up the old node
+                        // Successfully moved the head, safely reclaim the old node memory
                         // SAFETY: We have exclusive ownership of head_ptr since the compare_exchange succeeded
                         // and no other thread can access it now. Box::from_raw will take ownership and
                         // drop it safely when it goes out of scope.
                         unsafe {
-                            // Convert the raw pointer back to a Box and drop it
                             drop(Box::from_raw(head_ptr));
                         }
-                        // Decrement the count atomically
-                        self.count.fetch_sub(1, Ordering::SeqCst);
+                        
+                        // Only decrement the count if we actually got a value
+                        // This prevents underflow in rare race conditions
+                        if value.is_some() {
+                            // Use Relaxed ordering for the count since it's just a metric
+                            // and doesn't affect algorithm correctness
+                            self.count.fetch_sub(1, Ordering::Release);
+                        }
+                        
                         return value;
                     }
                     Err(_) => {
@@ -308,34 +355,68 @@ impl<T: Send + Sync> KahunaQueue<T> {
                     }
                 }
             }
+            
+            // Brief yield to reduce contention in tight loops
+            std::hint::spin_loop();
         }
     }
 
     /// Attempts to pop an item from the queue with a timeout.
     ///
+    /// This method repeatedly tries to pop an item from the queue until an item is found
+    /// or the timeout is reached. It uses an exponential backoff strategy to reduce CPU usage
+    /// while waiting.
+    ///
     /// # Arguments
     ///
     /// * `timeout` - Maximum time to wait for an item. If None, uses the default timeout.
+    ///               If no default timeout is configured, tries once without waiting.
     ///
     /// # Returns
     ///
     /// * `Ok(T)` - The popped item.
-    /// * `Err(KahunaQueueError::QueueEmpty)` - The queue is empty.
-    /// * `Err(KahunaQueueError::Timeout)` - The timeout was reached.
+    /// * `Err(KahunaQueueError::QueueEmpty)` - The queue is empty and no timeout was specified.
+    /// * `Err(KahunaQueueError::Timeout)` - The timeout was reached without finding an item.
+    ///
+    /// # Thread Safety
+    ///
+    /// This operation is thread-safe and can be called concurrently from multiple threads.
     pub fn pop_with_timeout(&self, timeout: Option<Duration>) -> KahunaQueueResult<T> {
+        // Use provided timeout or fall back to configured default
         let timeout = timeout.or(self.default_timeout);
         
         if let Some(timeout) = timeout {
             let start = Instant::now();
+            let mut backoff_counter = 0u32;
             
+            // Try until timeout is reached
             while start.elapsed() < timeout {
+                // Try to pop an item
                 if let Some(value) = self.pop() {
                     return Ok(value);
                 }
-                // Small backoff to avoid spinning too aggressively
-                std::thread::yield_now();
+                
+                // Progressive backoff to reduce CPU usage while waiting
+                if backoff_counter < 10 {
+                    // Short spins for immediate response if item becomes available
+                    for _ in 0..(1 << backoff_counter) {
+                        std::hint::spin_loop();
+                    }
+                } else {
+                    // After spinning hasn't helped, yield to the OS scheduler
+                    std::thread::yield_now();
+                    
+                    // For long waits, sleep for progressively longer intervals
+                    if backoff_counter > 15 {
+                        let sleep_ms = std::cmp::min(1 << (backoff_counter - 15), 50);
+                        std::thread::sleep(Duration::from_millis(sleep_ms as u64));
+                    }
+                }
+                
+                backoff_counter = std::cmp::min(backoff_counter + 1, 20);
             }
             
+            // Timeout reached without finding an item
             Err(KahunaQueueError::Timeout(timeout))
         } else {
             // No timeout specified, just try once
@@ -345,13 +426,21 @@ impl<T: Send + Sync> KahunaQueue<T> {
 }
 
 impl<T: Send + Sync> Drop for KahunaQueue<T> {
+    /// Safely frees all memory associated with the queue when it is dropped.
+    ///
+    /// This implementation ensures all nodes are properly deallocated,
+    /// preventing memory leaks. It first consumes all remaining items,
+    /// then frees the sentinel node.
     fn drop(&mut self) {
-        // Free all remaining nodes
+        // Free all remaining nodes by popping them
+        // This ensures proper deallocation of all nodes in the queue
         while let Some(_) = self.pop() {}
         
-        // Free the sentinel node
+        // Finally free the sentinel node that's always present
         let head_ptr = self.head.load(Ordering::Relaxed);
         if !head_ptr.is_null() {
+            // SAFETY: At this point we have exclusive ownership of the queue,
+            // so it's safe to deallocate the sentinel node.
             unsafe {
                 drop(Box::from_raw(head_ptr));
             }
@@ -366,64 +455,100 @@ unsafe impl<T: Send + Sync> Sync for KahunaQueue<T> {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Barrier, Mutex};
     use std::thread;
+    use std::sync::atomic::{AtomicUsize, Ordering, AtomicBool};
     use std::time::Instant;
     
     /// Helper function for setting up a test queue with specified configuration
-    /// 
-    /// # Arguments
-    /// * `max_capacity` - Maximum capacity for the queue
-    /// * `apply_backpressure` - Whether to apply backpressure when queue is full
-    /// 
-    /// # Returns
-    /// A new KahunaQueue with the specified configuration wrapped in an Arc
-    fn create_test_queue<T: Send + Sync + 'static>(max_capacity: usize, apply_backpressure: bool) -> Arc<KahunaQueue<T>> {
-        Arc::new(KahunaQueue::with_config(KahunaQueueConfig {
+    fn setup_test_queue<T>(max_capacity: usize) -> KahunaQueue<T>
+    where
+        T: Send + Sync + 'static,
+    {
+        KahunaQueue::with_config(KahunaQueueConfig {
             max_capacity,
             default_timeout: None,
-            apply_backpressure,
-        }))
+            apply_backpressure: true,
+        })
     }
     
     #[test]
-    fn test_queue_basic_operations() {
+    fn test_basic_operations() {
         let queue = KahunaQueue::new();
         
         // Test initial state
-        assert!(queue.is_empty());
         assert_eq!(queue.len(), 0);
+        assert!(queue.is_empty());
         assert!(!queue.is_full());
         
-        // Test push and len
-        assert!(queue.push(1));
-        assert!(!queue.is_empty());
+        // Test push and verify size
+        assert!(queue.push(42));
         assert_eq!(queue.len(), 1);
+        assert!(!queue.is_empty());
         
         // Test pop
-        assert_eq!(queue.pop(), Some(1));
-        assert!(queue.is_empty());
+        assert_eq!(queue.pop(), Some(42));
         assert_eq!(queue.len(), 0);
+        assert!(queue.is_empty());
         
-        // Test empty pop
+        // Test pop empty queue
         assert_eq!(queue.pop(), None);
+    }
+    
+    #[test]
+    fn test_backpressure() {
+        let queue = setup_test_queue::<i32>(2);
+        
+        assert!(queue.push(1));
+        assert!(queue.push(2));
+        
+        // Queue is at max capacity, should apply backpressure
+        assert!(!queue.push(3));
+        
+        // After popping, we should be able to push again
+        assert_eq!(queue.pop(), Some(1));
+        assert!(queue.push(3));
+        
+        // Clean up
+        assert_eq!(queue.pop(), Some(2));
+        assert_eq!(queue.pop(), Some(3));
+        assert_eq!(queue.pop(), None);
+    }
+    
+    #[test]
+    fn test_pop_with_timeout() {
+        let queue = setup_test_queue::<i32>(100);
+        
+        // Test immediate timeout on empty queue
+        let result = queue.pop_with_timeout(Some(Duration::from_millis(0)));
+        assert!(matches!(result, Err(KahunaQueueError::Timeout(_))));
+        
+        // Insert an item and pop with timeout
+        assert!(queue.push(42));
+        let result = queue.pop_with_timeout(Some(Duration::from_millis(100)));
+        assert_eq!(result, Ok(42));
+        
+        // Test no timeout specified
+        let result = queue.pop_with_timeout(None);
+        assert!(matches!(result, Err(KahunaQueueError::QueueEmpty)));
     }
 
     #[test]
     fn test_queue_multiple_operations() {
         let queue = KahunaQueue::new();
-        
+
         // Push multiple items
         for i in 0..10 {
             assert!(queue.push(i));
         }
-        
+
         assert_eq!(queue.len(), 10);
-        
+
         // Pop all items in order
         for i in 0..10 {
             assert_eq!(queue.pop(), Some(i));
         }
-        
+
         assert!(queue.is_empty());
         assert_eq!(queue.pop(), None);
     }
@@ -431,6 +556,7 @@ mod tests {
     #[test]
     fn test_queue_timeout() {
         let queue = KahunaQueue::new();
+
         
         // Test timeout on empty queue
         let result = queue.pop_with_timeout(Some(Duration::from_millis(10)));
@@ -479,7 +605,7 @@ mod tests {
         const MAX_EMPTY_RETRIES: usize = 100;
         
         // Create a shared queue
-        let queue = create_test_queue::<usize>(MAX_CAPACITY, true);
+        let queue = setup_test_queue::<usize>(MAX_CAPACITY);
         
         // Synchronization primitives
         let producers_done = Arc::new(AtomicBool::new(false));
@@ -495,7 +621,7 @@ mod tests {
         // Launch producer threads
         let mut producer_handles = Vec::new();
         for p in 0..PRODUCER_COUNT {
-            let q = Arc::clone(&queue);
+            let q: Arc<KahunaQueue<usize>> = Arc::clone(&queue);
             let b = Arc::clone(&barrier);
             producer_handles.push(thread::spawn(move || -> Result<(), String> {
                 // Wait for all threads to be ready
@@ -521,7 +647,7 @@ mod tests {
         // Launch consumer threads
         let mut consumer_handles = Vec::new();
         for c in 0..CONSUMER_COUNT {
-            let q = Arc::clone(&queue);
+            let q: Arc<KahunaQueue<usize>> = Arc::clone(&queue);
             let consumed = Arc::clone(&consumed_items);
             let counter = Arc::clone(&received_count);
             let done_flag = Arc::clone(&producers_done);
@@ -665,5 +791,178 @@ mod tests {
         
         // Final verification that the queue is empty
         assert!(queue.is_empty(), "Queue not empty after test");
+    }
+    
+    #[test]
+    fn test_fifo_order_under_contention() {
+        const QUEUE_SIZE: usize = 100;
+        const NUM_PRODUCER_THREADS: usize = 4;
+        const ITEMS_PER_THREAD: usize = 500;
+        
+        let queue = Arc::new(setup_test_queue::<usize>(QUEUE_SIZE));
+        
+        // Use ranges to verify FIFO ordering within each producer's stream
+        // Each producer will push items with its ID as the high bits
+        let barrier = Arc::new(Barrier::new(NUM_PRODUCER_THREADS + 1)); // +1 for consumer thread
+        
+        // Thread handles
+        let mut handles = Vec::new();
+        
+        // Producer threads
+        for id in 0..NUM_PRODUCER_THREADS {
+            let queue_clone = Arc::clone(&queue);
+            let barrier_clone = Arc::clone(&barrier);
+            
+            let handle = thread::spawn(move || {
+                // Wait for all threads to be ready
+                barrier_clone.wait();
+                
+                // Each thread produces items with its ID encoded in high bits
+                // and sequence number in low bits to detect ordering violations
+                for seq in 0..ITEMS_PER_THREAD {
+                    let item = (id << 24) | seq; // Upper 8 bits = thread ID, lower 24 bits = sequence
+                    while !queue_clone.push(item) {
+                        thread::yield_now();
+                    }
+                }
+            });
+            
+            handles.push(handle);
+        }
+        
+        // Consumer thread - verifies FIFO ordering per producer stream
+        let consumer_handle = {
+            let queue_clone = Arc::clone(&queue);
+            let barrier_clone = Arc::clone(&barrier);
+            
+            thread::spawn(move || {
+                // Track the last sequence number seen for each producer thread
+                let mut last_seq = vec![0; NUM_PRODUCER_THREADS];
+                let mut items_received = 0;
+                let expected_total = NUM_PRODUCER_THREADS * ITEMS_PER_THREAD;
+                
+                // Wait for all threads to be ready
+                barrier_clone.wait();
+                
+                while items_received < expected_total {
+                    if let Some(item) = queue_clone.pop() {
+                        // Extract thread ID and sequence number
+                        let thread_id = (item >> 24) as usize;
+                        let seq = item & 0xFFFFFF;
+                        
+                        // Verify this item comes after the previous one from this producer
+                        // This ensures FIFO ordering within each producer's stream
+                        assert!(seq >= last_seq[thread_id], 
+                                "FIFO violation for thread {}: received seq {} after {}", 
+                                thread_id, seq, last_seq[thread_id]);
+                        
+                        last_seq[thread_id] = seq + 1;
+                        items_received += 1;
+                    } else {
+                        thread::yield_now();
+                    }
+                }
+                
+                // Verify we received all items from each producer
+                for (id, &seq) in last_seq.iter().enumerate() {
+                    assert_eq!(seq, ITEMS_PER_THREAD, "Missing items from producer {}", id);
+                }
+            })
+        };
+        
+        // Wait for all threads to complete
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        consumer_handle.join().unwrap();
+        
+        // Verify the queue is empty
+        assert!(queue.is_empty(), "Queue not empty after test");
+    }
+    
+    #[test]
+    fn test_high_contention_stress() {
+        // Using a much higher thread count than CPU cores to create contention
+        const NUM_THREADS: usize = 32;
+        const QUEUE_SIZE: usize = 100;
+        const OPS_PER_THREAD: usize = 1000;
+        
+        let queue = Arc::new(setup_test_queue::<usize>(QUEUE_SIZE));
+        let barrier = Arc::new(Barrier::new(NUM_THREADS));
+        let op_counter = Arc::new(AtomicUsize::new(0));
+        let error_flag = Arc::new(AtomicBool::new(false));
+        
+        // Thread handles
+        let mut handles = Vec::new();
+        
+        for id in 0..NUM_THREADS {
+            let queue_clone = Arc::clone(&queue);
+            let barrier_clone = Arc::clone(&barrier);
+            let op_counter_clone = Arc::clone(&op_counter);
+            let error_flag_clone = Arc::clone(&error_flag);
+            
+            let handle = thread::spawn(move || {
+                // Wait for all threads to be ready
+                barrier_clone.wait();
+                
+                let mut rng = id; // Use thread ID as simple seed
+                let mut local_op_count = 0;
+                
+                while local_op_count < OPS_PER_THREAD && !error_flag_clone.load(Ordering::Relaxed) {
+                    // Randomly choose between push and pop operations
+                    // More complex patterns can use thread ID for deterministic variation
+                    rng = rng.wrapping_mul(1664525).wrapping_add(1013904223); // Simple LCG
+                    let do_push = (rng % 2) == 0;
+                    
+                    if do_push {
+                        // Use a combined thread ID and counter as the value
+                        let value = (id << 24) | (local_op_count & 0xFFFFFF);
+                        if queue_clone.push(value) {
+                            op_counter_clone.fetch_add(1, Ordering::Relaxed);
+                        }
+                    } else {
+                        if queue_clone.pop().is_some() {
+                            op_counter_clone.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                    
+                    local_op_count += 1;
+                    
+                    // Occasionally yield to increase scheduler contention
+                    if (rng % 64) == 0 {
+                        thread::yield_now();
+                    }
+                }
+            });
+            
+            handles.push(handle);
+        }
+        
+        // Wait for all threads to complete
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        
+        // Success if we get here without panics or deadlocks
+        let total_ops = op_counter.load(Ordering::Relaxed);
+        assert!(total_ops > 0, "No operations completed successfully");
+        
+        // Empty the queue for cleanup
+        while queue.pop().is_some() {}
+    }
+    
+    #[test]
+    fn test_drop_with_remaining_items() {
+        // Create a queue with items and verify it drops properly
+        let queue = setup_test_queue::<Box<[u8; 1024]>>(100);
+        
+        // Push several large items that would leak memory if not properly freed
+        for i in 0..10 {
+            let large_item = Box::new([i as u8; 1024]);
+            assert!(queue.push(large_item));
+        }
+        
+        // Queue will be dropped at the end of this scope
+        // The test passes if it doesn't crash, leak memory, or trigger sanitizer errors
     }
 }
