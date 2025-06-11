@@ -39,15 +39,15 @@ This document outlines the tasks required to build the Mauka MCP Server accordin
 ### Low-Level Data Structures
 - [x] Build Kahuna Lock-Free Queue (verified with concurrency tests 2025-06-10)
 - [x] Implement Niihau Header Trie
-- [ ] Create Kona Bloom Filter Admission Control
-- [ ] Implement Puka Cuckoo Hash Deduplication
-- [ ] Develop Boyer-Moore Pattern Matcher utility
+- [x] Create Kona Bloom Filter Admission Control (verified with concurrency tests 2025-06-11)
+- [x] Implement Puka Cuckoo Hash Deduplication (verified with concurrency tests 2025-06-11, replaced with DashMap implementation)
+- [x] Develop Boyer-Moore Pattern Matcher utility (verified with property tests 2025-06-13)
 
 ### Base Protocol Support
-- [ ] Implement JSON-RPC 2.0 Handler
-- [ ] Add Request/Response Correlation mechanism
-- [ ] Create initialize method handler
-- [ ] Create tools/list handler
+- [x] Implement JSON-RPC 2.0 Handler (verified with tests 2025-06-11)
+- [x] Add Request/Response Correlation mechanism (verified with tests 2025-06-11)
+- [x] Create initialize method handler (verified with tests 2025-06-11)
+- [x] Create tools/list handler (verified with tests 2025-06-11)
 
 ## Phase 3: Network and Transport Layer
 

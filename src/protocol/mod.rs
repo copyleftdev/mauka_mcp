@@ -3,4 +3,8 @@
 //! This module implements the MCP protocol, including JSON-RPC 2.0 handling,
 //! request/response correlation, and protocol methods.
 
-// Module structure to be implemented in Phase 2
+// JSON-RPC 2.0 implementation
+pub mod jsonrpc;
+
+// Re-export common protocol components
+pub use self::jsonrpc::handler::{JsonRpcHandler, MethodContext, MethodHandler, MethodResult};
